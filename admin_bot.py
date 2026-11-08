@@ -17,7 +17,6 @@ ADMIN_ID = 8808258682 # Твой ID
 bot = Bot(token=ADMIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Путь к базе (тот же, что у основного бота)
 data_dir = Path(os.environ.get("DATA_DIR", "/app/data"))
 data_dir.mkdir(parents=True, exist_ok=True)
 db_path = data_dir / "shop.db"
@@ -53,7 +52,7 @@ async def users_list(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id): return
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT user_id, username, full_name, sub_until FROM users")
+    cur.execute("SELECT user_id, username, full_name, sub_until FROM users ORDER BY sub_until DESC LIMIT 20")
     users = cur.fetchall()
     conn.close()
 
@@ -61,15 +60,15 @@ async def users_list(callback: types.CallbackQuery):
         await callback.message.edit_text("❌ Пользователей пока нет.", reply_markup=main_menu())
         return
 
-    text = "👥 <b>Пользователи:</b>\n\n"
+    text = "👥 <b>Последние 20 юзеров:</b>\n\n"
     kb = []
     today = datetime.datetime.now().strftime("%Y-%m-%d")
 
-    for u in users[:20]: # Показываем первых 20
+    for u in users:
         sub = u['sub_until']
         status = "✅" if sub and sub >= today else "❌"
-        text += f"{status} {u['full_name']} (@{u['username']}) - <code>{u['user_id']}</code>\n"
-        kb.append([InlineKeyboardButton(text=f"{status} {u['full_name']}", callback_data=f"user_{u['user_id']}")])
+        text += f"{status} {u['full_name']} (@{u['username']})\n"
+        kb.append([InlineKeyboardButton(text=f"{status} {u['full_name']} (@{u['username']})", callback_data=f"user_{u['user_id']}")])
 
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -131,11 +130,8 @@ async def extend(callback: types.CallbackQuery):
     new_date_str = new_date.strftime("%Y-%m-%d")
     
     cur.execute("UPDATE users SET sub_until = ? WHERE user_id = ?", (new_date_str, user_id))
-    # Отправляем уведомление юзеру через основного бота (если он есть)
-    # В реальности тут надо дергать основного бота, но пока просто сохраняем в базу
     msg = f"👑 <b>Администратор продлил вашу подписку!</b>\n\nТеперь она активна до: <b>{new_date_str}</b>"
     cur.execute("UPDATE users SET notify_msg = ? WHERE user_id = ?", (msg, user_id))
-    
     conn.commit()
     conn.close()
 
