@@ -9,12 +9,17 @@ from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-# ===== ТОКЕН И ID =====
-ADMIN_BOT_TOKEN = "9126496920:AAH3R7wayQ6cUE0JWLt3SVDSuOSq34gD0NA"
-ADMIN_ID = 8808258682 # Твой ID
-# =======================
+# ===== НАСТРОЙКИ =====
+ADMIN_BOT_TOKEN = "9126496920:AAH3R7wayQ6cUE0JWLt3SVDSuOSq34gD0NA"  # Админка
+ADMIN_ID = 8808258682                     # Твой ID
+MAIN_BOT_TOKEN = "9232358495:AAHAAXXqACqM4-RIDuS1Yxkb2PHOmVH9ZN0"  # Магазин (для уведомлений)
+# ======================
 
-bot = Bot(token=ADMIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# Бот админки
+admin_bot = Bot(token=ADMIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# Бот магазина (нужен только для отправки сообщений)
+main_bot = Bot(token=MAIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
 dp = Dispatcher()
 
 data_dir = Path(os.environ.get("DATA_DIR", "/app/data"))
@@ -49,9 +54,10 @@ async def to_main(callback: types.CallbackQuery):
 async def users_list(callback: types.CallbackQuery):
     await callback.answer()
     if callback.from_user.id != ADMIN_ID: return
+    
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT user_id, username, full_name, sub_until FROM users ORDER BY sub_until DESC LIMIT 20")
+    cur.execute("SELECT user_id, username, full_name, sub_until FROM users ORDER BY sub_until DESC")
     users = cur.fetchall()
     conn.close()
 
@@ -59,15 +65,21 @@ async def users_list(callback: types.CallbackQuery):
         await callback.message.edit_text("❌ Пользователей пока нет.", reply_markup=main_menu())
         return
 
-    text = "👥 <b>Последние 20 юзеров:</b>\n\n"
+    text = "👥 <b>Все пользователи:</b>\n\n"
     kb = []
     today = datetime.datetime.now().strftime("%Y-%m-%d")
 
+    # Выводим всех, разбивая на страницы по 10 (для удобства)
     for u in users:
         sub = u['sub_until']
         status = "✅" if sub and sub >= today else "❌"
         text += f"{status} {u['full_name']} (@{u['username']})\n"
-        kb.append([InlineKeyboardButton(text=f"{status} {u['full_name']}", callback_data=f"user_{u['user_id']}")])
+        
+        # В кнопку пихаем ID и имя
+        kb.append([InlineKeyboardButton(
+            text=f"{status} {u['full_name']}", 
+            callback_data=f"user_{u['user_id']}"
+        )])
 
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -131,10 +143,15 @@ async def extend(callback: types.CallbackQuery):
     new_date_str = new_date.strftime("%Y-%m-%d")
     
     cur.execute("UPDATE users SET sub_until = ? WHERE user_id = ?", (new_date_str, user_id))
-    msg = f"👑 <b>Администратор продлил вашу подписку!</b>\n\nТеперь она активна до: <b>{new_date_str}</b>"
-    cur.execute("UPDATE users SET notify_msg = ? WHERE user_id = ?", (msg, user_id))
     conn.commit()
     conn.close()
+
+    # Уведомляем юзера через ОСНОВНОГО бота
+    try:
+        msg = f"👑 <b>Администратор продлил вашу подписку!</b>\n\nТеперь она активна до: <b>{new_date_str}</b>"
+        await main_bot.send_message(user_id, msg)
+    except Exception as e:
+        print(f"Не удалось отправить уведомление: {e}")
 
     await user_info(callback)
 
@@ -147,10 +164,15 @@ async def revoke(callback: types.CallbackQuery):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET sub_until = NULL WHERE user_id = ?", (user_id,))
-    msg = "❌ <b>Ваша подписка была отменена администратором.</b>"
-    cur.execute("UPDATE users SET notify_msg = ? WHERE user_id = ?", (msg, user_id))
     conn.commit()
     conn.close()
+
+    # Уведомляем юзера
+    try:
+        msg = "❌ <b>Ваша подписка была отменена администратором.</b>"
+        await main_bot.send_message(user_id, msg)
+    except Exception as e:
+        print(f"Не удалось отправить уведомление: {e}")
 
     await user_info(callback)
 
@@ -176,9 +198,29 @@ async def stats(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
     await callback.message.edit_text(text, reply_markup=kb)
 
+# ===== НОВЫЙ ХЕНДЛЕР: УВЕДОМЛЕНИЕ О НОВОМ START =====
+@dp.message(Command("start"))
+async def catch_start(message: types.Message):
+    # Если это не админ, просто выходим (админка уже обработала выше)
+    if message.from_user.id == ADMIN_ID:
+        return
+    
+    # Отправляем тебе уведомление о новом юзере
+    user = message.from_user
+    text = (
+        f"🔔 <b>Новый пользователь в магазине!</b>\n\n"
+        f"Имя: {user.full_name}\n"
+        f"Юзер: @{user.username}\n"
+        f"ID: <code>{user.id}</code>"
+    )
+    try:
+        await admin_bot.send_message(ADMIN_ID, text)
+    except Exception as e:
+        print(f"Не удалось отправить уведомление админу: {e}")
+
 async def main():
     print("Админ-бот запущен.")
-    await dp.start_polling(bot)
+    await dp.start_polling(admin_bot, allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
     asyncio.run(main())
